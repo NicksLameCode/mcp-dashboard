@@ -76,7 +76,6 @@ fn draw_server_list(f: &mut Frame, area: Rect, app: &App) {
                     };
                     (format!("✗ {short}"), Color::Red, "-".to_string())
                 }
-                ServerStatus::Checking => ("⟳ ...".to_string(), Color::Yellow, "-".to_string()),
                 ServerStatus::Unknown => ("? ---".to_string(), Color::DarkGray, "-".to_string()),
             };
 
@@ -168,12 +167,6 @@ fn draw_tool_details(f: &mut Frame, area: Rect, app: &App) {
                 Line::from(""),
                 Line::from(e.as_str()),
             ]
-        }
-        ServerStatus::Checking => {
-            vec![Line::from(Span::styled(
-                "Checking...",
-                Style::default().fg(Color::Yellow),
-            ))]
         }
         ServerStatus::Unknown => {
             vec![Line::from(Span::styled(

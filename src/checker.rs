@@ -13,7 +13,6 @@ pub struct ToolInfo {
 
 #[derive(Debug, Clone)]
 pub enum ServerStatus {
-    Checking,
     Healthy {
         tools: Vec<ToolInfo>,
         server_name: Option<String>,
@@ -79,7 +78,7 @@ pub async fn check_server(config: &ServerConfig) -> (ServerStatus, LogEntry) {
 async fn check_server_inner(
     config: &ServerConfig,
 ) -> Result<(Vec<ToolInfo>, Option<String>), String> {
-    let mut cmd = Command::new(&config.command);
+    let cmd = Command::new(&config.command);
 
     let (transport, _stderr) = TokioChildProcess::builder(cmd.configure(|cmd| {
         cmd.args(&config.args);

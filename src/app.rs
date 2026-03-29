@@ -6,7 +6,6 @@ pub struct App {
     pub servers: Vec<ServerState>,
     pub selected: usize,
     pub logs: Vec<LogEntry>,
-    pub checking: bool,
     pub should_quit: bool,
     pub scroll_offset: usize,
 }
@@ -62,7 +61,6 @@ impl App {
             servers,
             selected: 0,
             logs: Vec::new(),
-            checking: false,
             should_quit: false,
             scroll_offset: 0,
         }
