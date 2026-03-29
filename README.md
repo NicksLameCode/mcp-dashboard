@@ -1,108 +1,136 @@
+<div align="center">
+
 # mcp-dashboard
 
-A full-featured TUI dashboard for managing and monitoring [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers.
+**The terminal dashboard for MCP servers.**
 
-Maintains persistent connections to MCP servers, provides real-time health monitoring, tool/resource/prompt browsing, interactive tool execution, token cost estimation, and protocol-level visibility -- all from the terminal.
+Manage, monitor, and debug your [Model Context Protocol](https://modelcontextprotocol.io/) servers from a single pane of glass -- without leaving the terminal.
+
+[![Crates.io](https://img.shields.io/crates/v/mcp-dashboard.svg?style=flat-square)](https://crates.io/crates/mcp-dashboard)
+[![Downloads](https://img.shields.io/crates/d/mcp-dashboard.svg?style=flat-square)](https://crates.io/crates/mcp-dashboard)
+[![License](https://img.shields.io/crates/l/mcp-dashboard.svg?style=flat-square)](LICENSE-MIT)
+[![Rust](https://img.shields.io/badge/rust-2024_edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
+
+[Features](#features) &bull; [Install](#install) &bull; [Quick Start](#quick-start) &bull; [Tabs](#tabs) &bull; [Configuration](#configuration) &bull; [Keybindings](#keybindings)
+
+</div>
+
+<br>
+
+<p align="center">
+  <img src="assets/demo.gif" alt="mcp-dashboard demo" width="100%">
+</p>
+
+## Why mcp-dashboard?
+
+Most MCP tooling is browser-based, Python-heavy, or requires Docker. **mcp-dashboard** is a single Rust binary that installs in seconds and runs anywhere -- your laptop, a server over SSH, a CI runner.
+
+- **Zero dependencies** -- no Node, no Python, no Docker
+- **Auto-discovers** servers from Claude Desktop, Claude Code, and Cursor
+- **Persistent connections** -- no more spawning/killing processes every health check
+- **Token cost estimation** -- see how much context window each server eats (unique to this tool)
+- **Tool execution** -- call any MCP tool directly from the terminal
 
 ## Features
 
-- **Persistent connections** with automatic health checks and reconnection
-- **Tool execution** -- select a tool, enter JSON params, execute and see results
-- **Resources & Prompts** -- browse the full MCP capability surface
-- **Token cost estimation** -- see how many LLM context tokens each server's definitions consume
-- **Auto-discovery** -- automatically finds servers from Claude Desktop, Claude Code, and Cursor configs
-- **HTTP/SSE transport** -- connect to remote MCP servers via Streamable HTTP, not just stdio
-- **Protocol log** -- see every MCP method call with timing
-- **Server stderr capture** -- view server debug output in the Logs tab
-- **Response time sparklines** -- visual performance trending
-- **Search/filter** -- filter servers by name with `/`
-- **Tab-based UI** -- Dashboard, Inspector, Protocol, and Logs tabs
+| Feature | Description |
+|---------|-------------|
+| **Dashboard** | Real-time server health, tool counts, response time sparklines, token estimates |
+| **Inspector** | Browse tools, enter JSON params, execute and see results inline |
+| **Protocol Log** | Every MCP method call with direction, timing, and error highlighting |
+| **Server Logs** | Live stderr capture from server processes for debugging |
+| **Auto-Discovery** | Finds servers from `~/.claude/.mcp.json`, `~/.cursor/mcp.json`, Claude Desktop config |
+| **HTTP Transport** | Connect to remote MCP servers via Streamable HTTP, not just local stdio |
+| **Search/Filter** | Filter servers by name with `/` -- handles large server collections |
+| **Token Estimation** | Color-coded context window cost per server (green/yellow/orange/red) |
+| **Sparklines** | Mini response time graphs showing performance trends |
+| **Help Overlay** | Press `?` for a complete keybinding reference |
 
 ## Install
 
-### From crates.io
+### Cargo (recommended)
 
 ```bash
 cargo install mcp-dashboard
 ```
 
-### From GitHub Releases
-
-Download a pre-built binary from the [Releases](https://github.com/nickslamecode/mcp-dashboard/releases) page.
-
-### Homebrew (macOS / Linux)
+### Homebrew
 
 ```bash
 brew tap nickslamecode/mcp-dashboard
 brew install mcp-dashboard
 ```
 
-## Usage
+### Pre-built Binaries
+
+Download from [GitHub Releases](https://github.com/NicksLameCode/mcp-dashboard/releases/latest).
+
+### From Source
 
 ```bash
+git clone https://github.com/NicksLameCode/mcp-dashboard.git
+cd mcp-dashboard
+cargo install --path .
+```
+
+## Quick Start
+
+```bash
+# Just run it -- servers are auto-discovered from Claude/Cursor configs
 mcp-dashboard
 ```
 
-On first run, a sample config is created at `~/.config/mcp-dashboard/servers.json`. Servers from Claude Desktop, Claude Code, and Cursor are auto-discovered.
+That's it. If you have MCP servers configured in Claude Desktop, Claude Code, or Cursor, they'll appear automatically.
 
-### Keybindings
-
-| Key | Action |
-|-----|--------|
-| `1` / `2` / `3` / `4` | Switch tabs (Dashboard / Inspector / Protocol / Logs) |
-| `j` / `k` / `Up` / `Down` | Navigate server or tool list |
-| `J` / `K` / `PgUp` / `PgDn` | Scroll detail panel |
-| `Tab` | Cycle detail view: Tools / Resources / Prompts |
-| `r` | Refresh all / reconnect failed servers |
-| `c` | Connect or disconnect selected server |
-| `e` | Edit selected server's config file |
-| `/` | Search / filter servers by name |
-| `?` | Help overlay |
-| `q` / `Esc` | Quit |
-
-**Inspector tab (Tab 2):**
-
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Navigate tool list |
-| `i` | Edit input parameters (JSON) |
-| `Enter` | Execute selected tool |
-| `Esc` | Exit input mode |
-
-## Tabs
-
-### Dashboard (Tab 1)
-
-Server list with status, tool count, token estimate, and source badge. Detail panel shows server info, uptime, response time sparkline, and browsable tools/resources/prompts.
-
-### Inspector (Tab 2)
-
-Interactive tool execution. Select a tool, view its input schema, enter JSON arguments, and execute. Results are displayed inline.
-
-### Protocol (Tab 3)
-
-Log of MCP protocol operations (initialize, tools/list, tools/call) with direction arrows, timing, and error highlighting.
-
-### Logs (Tab 4)
-
-Per-server stderr output captured from child processes. Useful for debugging server-side issues.
-
-## Configuration
-
-### Config Format
+To add servers manually, edit `~/.config/mcp-dashboard/servers.json` (created on first run):
 
 ```json
 [
   {
     "name": "my-server",
-    "command": "/path/to/server-binary",
-    "args": ["arg1", "arg2"],
-    "cwd": "/path/to/working/directory",
-    "env": {
-      "API_KEY": "your-key"
-    },
-    "server_type": "rust",
-    "config_path": "/path/to/project/.mcp.json"
+    "command": "node",
+    "args": ["dist/index.js"],
+    "cwd": "/path/to/server"
+  }
+]
+```
+
+## Tabs
+
+### 1 &mdash; Dashboard
+
+The main view. Server list with status indicators, tool/resource/prompt counts, token cost estimates, and source badges. The detail panel shows:
+
+- Server name, uptime, and response time
+- Response time sparkline (last 60 checks)
+- Token cost breakdown (tools/resources/prompts)
+- Browsable tool, resource, and prompt lists (cycle with `Tab`)
+
+### 2 &mdash; Inspector
+
+Interactive tool execution. Select a tool from the left panel, view its input schema, type JSON arguments, and press `Enter` to execute. Results appear inline with error highlighting.
+
+### 3 &mdash; Protocol
+
+A chronological log of every MCP protocol operation -- `initialize`, `tools/list`, `tools/call`, etc. Shows direction (`→` sent, `←` received), server name, method, result summary, and round-trip time.
+
+### 4 &mdash; Logs
+
+Per-server stderr output captured from child processes. Select a server to view its debug output. Useful for diagnosing startup failures, malformed responses, or server-side errors.
+
+## Configuration
+
+### Stdio Server (default)
+
+```json
+[
+  {
+    "name": "my-server",
+    "command": "/path/to/binary",
+    "args": ["--flag", "value"],
+    "cwd": "/working/directory",
+    "env": { "API_KEY": "sk-..." },
+    "config_path": "/path/to/.mcp.json"
   }
 ]
 ```
@@ -119,46 +147,98 @@ Per-server stderr output captured from child processes. Useful for debugging ser
 ]
 ```
 
+### Config Reference
+
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | Yes | Display name for the server |
-| `command` | Yes (stdio) | Binary or command to run |
+| `name` | Yes | Display name |
+| `command` | Stdio only | Binary or command to run |
 | `args` | No | Command line arguments |
-| `cwd` | No | Working directory for the server process |
-| `env` | No | Environment variables to set |
+| `cwd` | No | Working directory |
+| `env` | No | Environment variables |
 | `transport` | No | `stdio` (default) or `http` |
-| `url` | Yes (http) | URL for HTTP transport |
-| `server_type` | No | Label (not shown in v0.2.0+) |
-| `config_path` | No | Path to server's config file (opened with `e`) |
+| `url` | HTTP only | Server endpoint URL |
+| `config_path` | No | Path to config file (opened with `e`) |
 
 ### Auto-Discovery
 
-mcp-dashboard automatically discovers servers from:
+Servers are automatically discovered from these locations:
 
-- **Claude Code**: `~/.claude/.mcp.json`, `~/.claude/mcp.json`
-- **Cursor**: `~/.cursor/mcp.json`
-- **Claude Desktop**: `~/.config/claude/claude_desktop_config.json`
+| Source | Config Path |
+|--------|------------|
+| Claude Code | `~/.claude/.mcp.json`, `~/.claude/mcp.json` |
+| Cursor | `~/.cursor/mcp.json` |
+| Claude Desktop | `~/.config/claude/claude_desktop_config.json` |
 
-Discovered servers appear alongside manually configured ones with a source badge.
+Discovered servers appear alongside manual ones with a source badge in the dashboard. Duplicates (same command + args) are automatically deduplicated.
+
+## Keybindings
+
+### Global
+
+| Key | Action |
+|-----|--------|
+| `1` `2` `3` `4` | Switch tabs |
+| `j` / `k` | Navigate list |
+| `J` / `K` | Scroll detail panel |
+| `r` | Refresh all / reconnect |
+| `c` | Toggle connection |
+| `e` | Edit config in `$EDITOR` |
+| `/` | Search / filter servers |
+| `?` | Help overlay |
+| `q` | Quit |
+
+### Inspector (Tab 2)
+
+| Key | Action |
+|-----|--------|
+| `i` | Edit JSON parameters |
+| `Enter` | Execute tool |
+| `Esc` | Exit input mode |
+
+### Search Mode
+
+| Key | Action |
+|-----|--------|
+| _type_ | Filter by name |
+| `Enter` | Keep filter |
+| `Esc` | Clear filter |
 
 ## How It Works
 
-On startup, mcp-dashboard establishes persistent connections to all configured servers:
+```
+                        ┌─────────────────────────┐
+                        │     mcp-dashboard        │
+                        │  (persistent connections) │
+                        └─────┬───────┬───────┬────┘
+                              │       │       │
+                     stdio    │  stdio│  HTTP │
+                              │       │       │
+                        ┌─────▼─┐ ┌───▼───┐ ┌─▼──────────┐
+                        │Server │ │Server │ │Remote Server│
+                        │  (A)  │ │  (B)  │ │    (C)      │
+                        └───────┘ └───────┘ └─────────────┘
+```
 
-1. Spawns each stdio server as a child process (or connects via HTTP)
-2. Performs the MCP `initialize` handshake
-3. Queries `tools/list`, `resources/list`, and `prompts/list` in parallel
-4. Maintains the connection for health checks every 10 seconds
-5. Captures stderr output for debugging
-6. Detects server death and marks as error
+1. **Connect** -- spawns stdio servers or opens HTTP connections
+2. **Initialize** -- MCP handshake with 15s timeout
+3. **Discover** -- queries tools, resources, and prompts in parallel
+4. **Monitor** -- health checks every 10s on existing connections
+5. **Capture** -- streams stderr from child processes in real-time
+6. **Detect** -- polls for server death every 500ms, marks as error
 
-Uses [rmcp](https://crates.io/crates/rmcp) for MCP protocol communication and [ratatui](https://crates.io/crates/ratatui) for the terminal UI.
+Built with [rmcp](https://crates.io/crates/rmcp) (MCP protocol) and [ratatui](https://crates.io/crates/ratatui) (terminal UI).
+
+## Contributing
+
+Contributions are welcome. Please open an issue first to discuss what you'd like to change.
+
+```bash
+git clone https://github.com/NicksLameCode/mcp-dashboard.git
+cd mcp-dashboard
+cargo run
+```
 
 ## License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
-
-at your option.
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
