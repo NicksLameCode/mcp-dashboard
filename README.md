@@ -52,54 +52,79 @@ Most MCP tooling is browser-based, Python-heavy, or requires Docker. **mcp-dashb
 
 ## Performance
 
-Every MCP tool in your IDE (Claude Code, Cursor, Claude Desktop) pays a hidden tax: **spawn a process, initialize the MCP handshake, make your call, kill the process.** Every single time. mcp-dashboard eliminates this by holding persistent connections -- connect once, call forever.
+### The Hidden Cost of MCP Cold Starts
 
-We benchmarked real production MCP servers to quantify the difference.
+When an MCP client needs to call a tool, there are two approaches:
 
-### The Numbers
+1. **Cold start:** Spawn the server process, do the MCP handshake, make the call, shut down. This is what happens with one-off scripts, CI pipelines, and any workflow that doesn't keep servers alive between calls.
+2. **Persistent connection:** Connect once, keep the process alive, reuse the connection for every subsequent call. This is what mcp-dashboard does, and what IDE extensions (Claude Code, Cursor) do during active sessions.
 
-Tested on real servers with the included `mcp-latency` benchmark tool. Cold start = traditional (spawn + init + call + shutdown per interaction). Warm call = dashboard persistent connection.
+The difference matters because **the actual tool call is fast -- it's the startup that's slow.** We benchmarked real production servers to see exactly how much.
+
+### Benchmark: Where Does the Time Go?
+
+Tested with the included `mcp-latency` benchmark tool against real MCP servers. Each cold-start round spawns a fresh process, initializes MCP, calls `list_tools`, and shuts down. Each warm-call round reuses an existing persistent connection.
 
 #### Rust MCP Server (`db-tunnel`, 9 tools)
 
-| Metric | Cold Start (traditional) | Warm Call (dashboard) | Speedup |
-|--------|-------------------------:|----------------------:|--------:|
-| **Mean** | 129.9ms | **0.1ms** | **1,846x** |
-| p50 | 128.2ms | 0.1ms | 1,282x |
-| p95 | 140.2ms | 0.1ms | 1,402x |
+```
+Cold start breakdown (20 rounds):
+  Spawn + MCP Init:    128.6ms  (99% of total)
+  list_tools call:       0.4ms  ( 1% of total)
+  ─────────────────────────────
+  Total per cold start:  129.9ms
 
-Where the time goes (cold start): Spawn + Init = **128.6ms** (99%), actual tool call = 0.4ms (1%).
+Warm call (persistent connection, 50 rounds):
+  list_tools call:       0.1ms
+```
 
 #### Node.js MCP Server (`mobile-api`, 10 tools)
 
-| Metric | Cold Start (traditional) | Warm Call (dashboard) | Speedup |
-|--------|-------------------------:|----------------------:|--------:|
-| **Mean** | 123.2ms | **0.5ms** | **272x** |
-| p50 | 124.5ms | 0.4ms | 311x |
-| p95 | 129.5ms | 0.6ms | 216x |
+```
+Cold start breakdown (20 rounds):
+  Spawn + MCP Init:    115.4ms  (94% of total)
+  list_tools call:       2.8ms  ( 6% of total)
+  ─────────────────────────────
+  Total per cold start:  123.2ms
 
-Where the time goes (cold start): Spawn + Init = **115.4ms** (94%), actual tool call = 2.8ms (6%).
+Warm call (persistent connection, 50 rounds):
+  list_tools call:       0.5ms
+```
 
-### Throughput
+The pattern is clear: **94-99% of a cold-start interaction is process spawn and MCP initialization**, not the tool call itself.
 
-Persistent connections don't just reduce latency -- they unlock burst throughput that's impossible with cold starts:
+### Real-World Impact: Multiple Calls
 
-| Scenario | Rust Server | Node.js Server |
-|----------|------------:|--------------:|
-| Burst (10 rapid calls) | **0.8ms total** (12,629 calls/sec) | **6.0ms total** (1,673 calls/sec) |
-| 10 calls traditional | 1,299ms (1.3s) | 1,232ms (1.2s) |
-| **Speedup for 10 calls** | **10x** | **10x** |
+The advantage compounds with every additional call because you pay the startup cost only once:
 
-### What This Means in Practice
+| Scenario | Cold Start (spawn each time) | Persistent (connect once) | Time Saved |
+|----------|-----------------------------:|--------------------------:|----------:|
+| 1 tool call | 130ms | 130ms | 0ms (same) |
+| 10 tool calls | 1,300ms | **131ms** | 1.2s |
+| 50 tool calls | 6,500ms | **135ms** | 6.4s |
+| 100 tool calls | 13,000ms | **140ms** | 12.9s |
 
-Every time an AI agent calls an MCP tool through the traditional path, it waits **~130ms** of pure overhead before the tool even starts executing. In an agentic session with 20 tool calls, that's **2.6 seconds of wasted time** just on spawn/init cycles.
+> **Note:** The first call on a persistent connection still pays the full startup cost (~130ms). The savings come from calls 2 through N, which skip spawn and init entirely.
 
-With mcp-dashboard's persistent connections:
-- **100 tool calls** save **13 seconds** of overhead (Rust server) or **12 seconds** (Node.js server)
-- An **agentic AI session** with 20 tool calls runs in **2ms** of connection overhead instead of **2,600ms**
-- **Health checks** every 10 seconds cost **0.1ms** instead of spawning a new process
+For **agentic AI sessions** where the model chains 10-20 tool calls, this turns seconds of overhead into milliseconds.
 
-The bottleneck was never the tool -- it was the connection lifecycle. mcp-dashboard removes it entirely.
+### Throughput Burst
+
+On a persistent connection, calls can fire as fast as the server handles them:
+
+| Server | 10 rapid calls | Throughput |
+|--------|---------------:|-----------:|
+| Rust (`db-tunnel`) | **0.8ms** total | 12,629 calls/sec |
+| Node.js (`mobile-api`) | **6.0ms** total | 1,673 calls/sec |
+
+### When Does This Matter Most?
+
+- **Scripts and CI** that spawn a server per invocation -- persistent connections save ~130ms per call
+- **AI agentic loops** with many sequential tool calls -- 10+ calls go from seconds to milliseconds
+- **Health monitoring** -- checking server status every 10s costs 0.1ms instead of 130ms
+- **The dashboard's Inspector tab** -- rapid tool iteration without restart overhead
+
+IDE extensions like Claude Code already maintain persistent connections during active sessions, so for single interactive calls in an IDE, the latency difference is less dramatic. The dashboard's advantage for IDE users is more about **multi-server visibility, health monitoring, and the AI Chat tab** than raw per-call speed.
 
 ### Run the Benchmark Yourself
 
@@ -113,7 +138,7 @@ cargo run --release --bin mcp-latency -- node dist/index.js
 cargo run --release --bin mcp-latency -- /path/to/rust-mcp-server --flag
 ```
 
-It runs 20 cold-start rounds and 50 warm-call rounds, then shows a comparison with percentiles and throughput.
+It runs 20 cold-start rounds and 50 warm-call rounds, then shows a full breakdown with percentiles and throughput.
 
 ## Install
 
