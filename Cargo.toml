@@ -1,6 +1,6 @@
 [package]
 name = "mcp-dashboard"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A full-featured TUI dashboard for managing and monitoring MCP (Model Context Protocol) servers"
@@ -19,3 +19,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 dirs = "6"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+futures-util = "0.3"

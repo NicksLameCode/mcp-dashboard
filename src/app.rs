@@ -1,3 +1,5 @@
+use crate::chat::ChatState;
+use crate::chat_config::AiConfig;
 use crate::config::ServerConfig;
 use crate::connection::{
     spawn_connect, spawn_health_check, spawn_refresh_capabilities, ConnectionState, LogEntry,
@@ -15,6 +17,7 @@ pub enum Tab {
     Inspector,
     Protocol,
     Logs,
+    Chat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +40,9 @@ pub struct App {
     pub search_active: bool,
     pub search_query: String,
     pub show_help: bool,
+    pub chat: ChatState,
+    pub ai_config: AiConfig,
+    pub chat_tx: Option<mpsc::UnboundedSender<AppEvent>>,
 }
 
 pub enum AppEvent {
@@ -49,6 +55,25 @@ pub enum AppEvent {
     HealthCheckResult(usize, Result<(Vec<Tool>, u64), String>),
     // Tool execution
     ToolResult(usize, Result<(String, u64, bool), String>), // idx, Ok((text, ms, is_error)) | Err
+    // Chat events
+    ChatToken(String),
+    ChatResponseComplete {
+        input_tokens: usize,
+        output_tokens: usize,
+    },
+    ChatError(String),
+    ChatToolCall {
+        id: String,
+        name: String,
+        server_idx: usize,
+        args: serde_json::Value,
+    },
+    ChatToolResult {
+        id: String,
+        result: String,
+        is_error: bool,
+        duration_ms: u64,
+    },
     // Timer
     HealthCheckAll,
     // User actions
@@ -64,6 +89,8 @@ pub enum AppEvent {
 
 impl App {
     pub fn new(configs: Vec<ServerConfig>) -> Self {
+        let ai_config = crate::chat_config::load_ai_config();
+        let chat = ChatState::new(&ai_config);
         let connections = configs.into_iter().map(ManagedConnection::new).collect();
         Self {
             connections,
@@ -78,6 +105,9 @@ impl App {
             search_active: false,
             search_query: String::new(),
             show_help: false,
+            chat,
+            ai_config,
+            chat_tx: None,
         }
     }
 
@@ -190,6 +220,49 @@ impl App {
             &tool_name,
             &self.inspector.input_buffer,
             &tx,
+        );
+    }
+
+    pub fn send_chat_message(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
+        let input = self.chat.input_buffer.trim().to_string();
+        if input.is_empty() || self.chat.is_streaming {
+            return;
+        }
+
+        // Add user message to history
+        self.chat.messages.push(crate::chat::ChatMessage {
+            role: crate::chat::MessageRole::User,
+            content: input.clone(),
+            timestamp: Local::now(),
+            tool_call: None,
+        });
+        self.chat.input_buffer.clear();
+        self.chat.scroll_offset = 0; // auto-scroll to bottom
+
+        // Build context — default to currently selected server if none toggled
+        let indices = if self.chat.context_server_indices.is_empty() {
+            vec![self.selected]
+        } else {
+            self.chat.context_server_indices.clone()
+        };
+
+        let system_prompt = crate::chat::build_system_prompt(&self.connections, &indices);
+
+        // Spawn the chat request
+        self.chat.is_streaming = true;
+        self.chat.streaming_buffer.clear();
+
+        let messages = self.chat.messages.clone();
+        let ai_config = self.ai_config.clone();
+        crate::chat_provider::spawn_chat_request(
+            self.chat.provider,
+            &ai_config,
+            &messages,
+            &system_prompt,
+            &self.connections,
+            &indices,
+            tx,
+            &mut self.chat,
         );
     }
 
@@ -319,6 +392,237 @@ impl App {
                     }
                 }
             }
+            AppEvent::ChatToken(text) => {
+                self.chat.streaming_buffer.push_str(&text);
+            }
+            AppEvent::ChatResponseComplete {
+                input_tokens,
+                output_tokens,
+            } => {
+                self.chat.is_streaming = false;
+                self.chat.streaming_handle = None;
+                let content = std::mem::take(&mut self.chat.streaming_buffer);
+                if !content.is_empty() {
+                    self.chat.messages.push(crate::chat::ChatMessage {
+                        role: crate::chat::MessageRole::Assistant,
+                        content,
+                        timestamp: Local::now(),
+                        tool_call: None,
+                    });
+                }
+                self.chat.total_input_tokens += input_tokens;
+                self.chat.total_output_tokens += output_tokens;
+                self.chat.error = None;
+                self.chat.trim_history(100);
+            }
+            AppEvent::ChatError(err) => {
+                self.chat.is_streaming = false;
+                self.chat.streaming_handle = None;
+                self.chat.streaming_buffer.clear();
+                self.chat.error = Some(err);
+            }
+            AppEvent::ChatToolCall {
+                id,
+                name,
+                server_idx,
+                args,
+            } => {
+                // Display tool call in chat
+                let server_name = self
+                    .connections
+                    .get(server_idx)
+                    .map(|c| c.config.name.clone())
+                    .unwrap_or_else(|| "unknown".into());
+
+                // Finalize any streaming text before the tool call
+                if !self.chat.streaming_buffer.is_empty() {
+                    let content = std::mem::take(&mut self.chat.streaming_buffer);
+                    self.chat.messages.push(crate::chat::ChatMessage {
+                        role: crate::chat::MessageRole::Assistant,
+                        content,
+                        timestamp: Local::now(),
+                        tool_call: None,
+                    });
+                }
+
+                let args_display = serde_json::to_string(&args).unwrap_or_default();
+                self.chat.messages.push(crate::chat::ChatMessage {
+                    role: crate::chat::MessageRole::ToolCall,
+                    content: format!("{name}({args_display})"),
+                    timestamp: Local::now(),
+                    tool_call: Some(crate::chat::ToolCallInfo {
+                        tool_name: name.clone(),
+                        server_name: server_name.clone(),
+                        is_result: false,
+                    }),
+                });
+
+                self.add_protocol_entry(
+                    &server_name,
+                    "tools/call",
+                    "\u{2192}",
+                    &format!("chat: call_tool({name})"),
+                    None,
+                    false,
+                );
+
+                // Store pending tool call for execution
+                self.chat
+                    .pending_tool_calls
+                    .push(crate::chat::PendingToolCall {
+                        id: id.clone(),
+                        tool_name: name.clone(),
+                        server_index: server_idx,
+                        arguments: args.clone(),
+                    });
+
+                // Execute the tool via MCP — resolve original name
+                let original_name = if name.starts_with('s') && name.contains('_') {
+                    name.split_once('_').map(|x| x.1).unwrap_or(&name).to_string()
+                } else {
+                    name.clone()
+                };
+
+                if let Some(conn) = self.connections.get(server_idx) {
+                    if let Some(peer) = conn.peer.clone() {
+                        let tx_clone = match self.chat_tx.clone() {
+                            Some(tx) => tx,
+                            None => return,
+                        };
+                        let id_clone = id;
+                        tokio::spawn(async move {
+                            let start = std::time::Instant::now();
+                            let arguments = args.as_object().cloned();
+                            let params = if let Some(args) = arguments {
+                                rmcp::model::CallToolRequestParams::new(original_name)
+                                    .with_arguments(args)
+                            } else {
+                                rmcp::model::CallToolRequestParams::new(original_name)
+                            };
+
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                peer.call_tool(params),
+                            )
+                            .await;
+
+                            let elapsed = start.elapsed().as_millis() as u64;
+
+                            match result {
+                                Ok(Ok(call_result)) => {
+                                    let is_error = call_result.is_error.unwrap_or(false);
+                                    let mut output = Vec::new();
+                                    for content in &call_result.content {
+                                        if let Some(text) = content.raw.as_text() {
+                                            output.push(text.text.clone());
+                                        } else {
+                                            output.push("[non-text content]".to_string());
+                                        }
+                                    }
+                                    let result_text = if output.is_empty() {
+                                        "(empty result)".to_string()
+                                    } else {
+                                        output.join("\n")
+                                    };
+                                    let _ = tx_clone.send(AppEvent::ChatToolResult {
+                                        id: id_clone,
+                                        result: result_text,
+                                        is_error,
+                                        duration_ms: elapsed,
+                                    });
+                                }
+                                Ok(Err(e)) => {
+                                    let _ = tx_clone.send(AppEvent::ChatToolResult {
+                                        id: id_clone,
+                                        result: format!("Tool error: {e}"),
+                                        is_error: true,
+                                        duration_ms: elapsed,
+                                    });
+                                }
+                                Err(_) => {
+                                    let _ = tx_clone.send(AppEvent::ChatToolResult {
+                                        id: id_clone,
+                                        result: "Tool call timed out (30s)".to_string(),
+                                        is_error: true,
+                                        duration_ms: 30000,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            AppEvent::ChatToolResult {
+                id,
+                result,
+                is_error,
+                duration_ms,
+            } => {
+                let server_name = self
+                    .chat
+                    .pending_tool_calls
+                    .last()
+                    .and_then(|tc| {
+                        self.connections
+                            .get(tc.server_index)
+                            .map(|c| c.config.name.clone())
+                    })
+                    .unwrap_or_default();
+
+                self.chat.messages.push(crate::chat::ChatMessage {
+                    role: crate::chat::MessageRole::ToolResult,
+                    content: result.clone(),
+                    timestamp: Local::now(),
+                    tool_call: Some(crate::chat::ToolCallInfo {
+                        tool_name: id.clone(), // Store the tool_use_id for Anthropic tool_result
+                        server_name: server_name.clone(),
+                        is_result: true,
+                    }),
+                });
+
+                self.add_protocol_entry(
+                    &server_name,
+                    "tools/call",
+                    "\u{2190}",
+                    &if is_error {
+                        "chat: Error result".into()
+                    } else {
+                        format!("chat: OK ({duration_ms}ms)")
+                    },
+                    Some(duration_ms),
+                    is_error,
+                );
+
+                // Remove the completed tool call
+                self.chat.pending_tool_calls.pop();
+
+                // Re-invoke the AI with the tool result (agentic loop)
+                if let Some(tx) = &self.chat_tx {
+                    let tx = tx.clone();
+                    self.chat.is_streaming = true;
+                    self.chat.streaming_buffer.clear();
+                    let messages = self.chat.messages.clone();
+                    let ai_config = self.ai_config.clone();
+                    let indices = if self.chat.context_server_indices.is_empty() {
+                        vec![self.selected]
+                    } else {
+                        self.chat.context_server_indices.clone()
+                    };
+                    let system_prompt =
+                        crate::chat::build_system_prompt(&self.connections, &indices);
+
+                    crate::chat_provider::spawn_chat_request(
+                        self.chat.provider,
+                        &ai_config,
+                        &messages,
+                        &system_prompt,
+                        &self.connections,
+                        &indices,
+                        tx,
+                        &mut self.chat,
+                    );
+                }
+            }
             AppEvent::Quit => self.should_quit = true,
             AppEvent::Up => {
                 if self.active_tab == Tab::Inspector {
@@ -350,12 +654,20 @@ impl App {
                 }
             }
             AppEvent::ScrollUp => {
-                if self.scroll_offset > 0 {
+                if self.active_tab == Tab::Chat {
+                    self.chat.scroll_offset += 1; // scroll up = increase offset from bottom
+                } else if self.scroll_offset > 0 {
                     self.scroll_offset -= 1;
                 }
             }
             AppEvent::ScrollDown => {
-                self.scroll_offset += 1;
+                if self.active_tab == Tab::Chat {
+                    if self.chat.scroll_offset > 0 {
+                        self.chat.scroll_offset -= 1; // scroll down = decrease offset (toward bottom)
+                    }
+                } else {
+                    self.scroll_offset += 1;
+                }
             }
             AppEvent::ReloadConfig => {
                 self.reload_config();

@@ -1,4 +1,7 @@
 mod app;
+mod chat;
+mod chat_config;
+mod chat_provider;
 mod config;
 mod connection;
 mod inspector;
@@ -46,6 +49,7 @@ async fn run_app(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(configs);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+    app.chat_tx = Some(tx.clone());
 
     app.connect_all(tx.clone());
 
@@ -127,8 +131,65 @@ async fn run_app(
                     continue;
                 }
 
+                // Chat input mode captures all keys
+                if app.active_tab == Tab::Chat && app.chat.input_mode {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.chat.input_mode = false;
+                        }
+                        KeyCode::Enter => {
+                            app.chat.input_mode = false;
+                            app.send_chat_message(tx.clone());
+                        }
+                        KeyCode::Backspace => {
+                            app.chat.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.chat.input_buffer.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // Normal key handling
                 match key.code {
+                    // Chat-specific keys (guarded, must come before unguarded)
+                    KeyCode::Esc if app.active_tab == Tab::Chat && app.chat.is_streaming => {
+                        app.chat.cancel_stream();
+                    }
+                    KeyCode::Char('i') if app.active_tab == Tab::Chat => {
+                        if app.chat.error.is_some() {
+                            app.chat.error = None;
+                        }
+                        app.chat.input_mode = true;
+                    }
+                    KeyCode::Char('p') if app.active_tab == Tab::Chat => {
+                        app.chat.cycle_provider(&app.ai_config.clone());
+                    }
+                    KeyCode::Char('n') if app.active_tab == Tab::Chat => {
+                        app.chat.new_conversation();
+                    }
+                    KeyCode::Tab if app.active_tab == Tab::Chat => {
+                        if !app.connections.is_empty() {
+                            app.chat.context_cursor =
+                                (app.chat.context_cursor + 1) % app.connections.len();
+                        }
+                    }
+                    KeyCode::Char(' ') if app.active_tab == Tab::Chat => {
+                        let cursor = app.chat.context_cursor;
+                        if cursor < app.connections.len() {
+                            app.chat.toggle_server_context(cursor);
+                        }
+                    }
+                    // Inspector-specific keys (guarded)
+                    KeyCode::Char('i') if app.active_tab == Tab::Inspector => {
+                        app.inspector.input_mode = true;
+                    }
+                    KeyCode::Enter if app.active_tab == Tab::Inspector => {
+                        app.execute_selected_tool(tx.clone());
+                    }
+                    // Global keys
                     KeyCode::Char('q') | KeyCode::Esc => {
                         app.handle_event(AppEvent::Quit);
                     }
@@ -152,6 +213,9 @@ async fn run_app(
                     KeyCode::Char('4') => {
                         app.handle_event(AppEvent::SetTab(Tab::Logs));
                     }
+                    KeyCode::Char('5') => {
+                        app.handle_event(AppEvent::SetTab(Tab::Chat));
+                    }
                     // Navigation
                     KeyCode::Up | KeyCode::Char('k') => {
                         app.handle_event(AppEvent::Up);
@@ -174,12 +238,6 @@ async fn run_app(
                     }
                     KeyCode::Tab => {
                         app.handle_event(AppEvent::CycleDetailTab);
-                    }
-                    KeyCode::Char('i') if app.active_tab == Tab::Inspector => {
-                        app.inspector.input_mode = true;
-                    }
-                    KeyCode::Enter if app.active_tab == Tab::Inspector => {
-                        app.execute_selected_tool(tx.clone());
                     }
                     KeyCode::Char('e') => {
                         if let Some(config_path) = app.selected_config_path().map(String::from) {

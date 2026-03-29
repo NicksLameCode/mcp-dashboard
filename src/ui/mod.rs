@@ -1,3 +1,4 @@
+mod chat;
 mod common;
 mod dashboard;
 mod inspector;
@@ -42,6 +43,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Tab::Inspector => inspector::draw(f, chunks[2], app),
             Tab::Protocol => protocol::draw(f, chunks[2], app),
             Tab::Logs => server_logs::draw(f, chunks[2], app),
+            Tab::Chat => chat::draw(f, chunks[2], app),
         }
         draw_activity_log(f, chunks[3], app);
     } else {
@@ -50,6 +52,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Tab::Inspector => inspector::draw(f, chunks[1], app),
             Tab::Protocol => protocol::draw(f, chunks[1], app),
             Tab::Logs => server_logs::draw(f, chunks[1], app),
+            Tab::Chat => chat::draw(f, chunks[1], app),
         }
         draw_activity_log(f, chunks[2], app);
     }
@@ -86,6 +89,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         ],
         Tab::Protocol => vec![("j/k", "nav"), ("?", "help"), ("q", "quit")],
         Tab::Logs => vec![("j/k", "nav"), ("?", "help"), ("q", "quit")],
+        Tab::Chat => vec![
+            ("i", "input"),
+            ("Enter", "send"),
+            ("p", "provider"),
+            ("n", "new"),
+            ("Tab", "servers"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
     };
 
     let mut spans = vec![
@@ -114,6 +126,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         (Tab::Inspector, "2:Inspector"),
         (Tab::Protocol, "3:Protocol"),
         (Tab::Logs, "4:Logs"),
+        (Tab::Chat, "5:Chat"),
     ];
 
     let tab_spans: Vec<Span> = tabs
@@ -202,7 +215,7 @@ fn draw_activity_log(f: &mut Frame, area: Rect, app: &App) {
 fn draw_help_overlay(f: &mut Frame) {
     let area = f.area();
     let popup_width = 60u16.min(area.width.saturating_sub(4));
-    let popup_height = 28u16.min(area.height.saturating_sub(4));
+    let popup_height = 40u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -244,6 +257,21 @@ fn draw_help_overlay(f: &mut Frame) {
         Line::from("  i          Edit input parameters (JSON)"),
         Line::from("  Enter      Execute selected tool"),
         Line::from("  Esc        Exit input mode"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Chat (Tab 5)",
+            Style::default()
+                .fg(common::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  i          Enter chat input mode"),
+        Line::from("  Enter      Send message"),
+        Line::from("  Esc        Exit input / cancel stream"),
+        Line::from("  p          Cycle AI provider"),
+        Line::from("  n          New conversation"),
+        Line::from("  Tab        Cycle server context"),
+        Line::from("  Space      Toggle server in context"),
+        Line::from("  J/K PgDn   Scroll messages"),
         Line::from(""),
         Line::from(Span::styled(
             "Search Mode (/)",
