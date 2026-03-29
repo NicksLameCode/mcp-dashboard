@@ -21,3 +21,11 @@ chrono = "0.4"
 dirs = "6"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
 futures-util = "0.3"
+
+[[bin]]
+name = "mcp-dashboard"
+path = "src/main.rs"
+
+[[bin]]
+name = "mcp-latency"
+path = "bench/mcp_latency.rs"

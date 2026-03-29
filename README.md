@@ -11,7 +11,7 @@ Manage, monitor, and debug your [Model Context Protocol](https://modelcontextpro
 [![License](https://img.shields.io/crates/l/mcp-dashboard.svg?style=flat-square)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-2024_edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
-[Features](#features) &bull; [Install](#install) &bull; [Quick Start](#quick-start) &bull; [Tabs](#tabs) &bull; [AI Chat](#5--chat-new) &bull; [Configuration](#configuration) &bull; [Keybindings](#keybindings)
+[Features](#features) &bull; [Performance](#performance) &bull; [Install](#install) &bull; [Quick Start](#quick-start) &bull; [Tabs](#tabs) &bull; [AI Chat](#5--chat-new) &bull; [Configuration](#configuration) &bull; [Keybindings](#keybindings)
 
 </div>
 
@@ -49,6 +49,71 @@ Most MCP tooling is browser-based, Python-heavy, or requires Docker. **mcp-dashb
 | **Token Estimation** | Color-coded context window cost per server (green/yellow/orange/red) |
 | **Sparklines** | Mini response time graphs showing performance trends |
 | **Help Overlay** | Press `?` for a complete keybinding reference |
+
+## Performance
+
+Every MCP tool in your IDE (Claude Code, Cursor, Claude Desktop) pays a hidden tax: **spawn a process, initialize the MCP handshake, make your call, kill the process.** Every single time. mcp-dashboard eliminates this by holding persistent connections -- connect once, call forever.
+
+We benchmarked real production MCP servers to quantify the difference.
+
+### The Numbers
+
+Tested on real servers with the included `mcp-latency` benchmark tool. Cold start = traditional (spawn + init + call + shutdown per interaction). Warm call = dashboard persistent connection.
+
+#### Rust MCP Server (`db-tunnel`, 9 tools)
+
+| Metric | Cold Start (traditional) | Warm Call (dashboard) | Speedup |
+|--------|-------------------------:|----------------------:|--------:|
+| **Mean** | 129.9ms | **0.1ms** | **1,846x** |
+| p50 | 128.2ms | 0.1ms | 1,282x |
+| p95 | 140.2ms | 0.1ms | 1,402x |
+
+Where the time goes (cold start): Spawn + Init = **128.6ms** (99%), actual tool call = 0.4ms (1%).
+
+#### Node.js MCP Server (`mobile-api`, 10 tools)
+
+| Metric | Cold Start (traditional) | Warm Call (dashboard) | Speedup |
+|--------|-------------------------:|----------------------:|--------:|
+| **Mean** | 123.2ms | **0.5ms** | **272x** |
+| p50 | 124.5ms | 0.4ms | 311x |
+| p95 | 129.5ms | 0.6ms | 216x |
+
+Where the time goes (cold start): Spawn + Init = **115.4ms** (94%), actual tool call = 2.8ms (6%).
+
+### Throughput
+
+Persistent connections don't just reduce latency -- they unlock burst throughput that's impossible with cold starts:
+
+| Scenario | Rust Server | Node.js Server |
+|----------|------------:|--------------:|
+| Burst (10 rapid calls) | **0.8ms total** (12,629 calls/sec) | **6.0ms total** (1,673 calls/sec) |
+| 10 calls traditional | 1,299ms (1.3s) | 1,232ms (1.2s) |
+| **Speedup for 10 calls** | **10x** | **10x** |
+
+### What This Means in Practice
+
+Every time an AI agent calls an MCP tool through the traditional path, it waits **~130ms** of pure overhead before the tool even starts executing. In an agentic session with 20 tool calls, that's **2.6 seconds of wasted time** just on spawn/init cycles.
+
+With mcp-dashboard's persistent connections:
+- **100 tool calls** save **13 seconds** of overhead (Rust server) or **12 seconds** (Node.js server)
+- An **agentic AI session** with 20 tool calls runs in **2ms** of connection overhead instead of **2,600ms**
+- **Health checks** every 10 seconds cost **0.1ms** instead of spawning a new process
+
+The bottleneck was never the tool -- it was the connection lifecycle. mcp-dashboard removes it entirely.
+
+### Run the Benchmark Yourself
+
+The benchmark tool is included:
+
+```bash
+cargo run --release --bin mcp-latency -- /path/to/your/mcp-server [args...]
+
+# Examples:
+cargo run --release --bin mcp-latency -- node dist/index.js
+cargo run --release --bin mcp-latency -- /path/to/rust-mcp-server --flag
+```
+
+It runs 20 cold-start rounds and 50 warm-call rounds, then shows a comparison with percentiles and throughput.
 
 ## Install
 
