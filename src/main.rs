@@ -1,9 +1,11 @@
 mod app;
-mod checker;
 mod config;
+mod connection;
+mod inspector;
+mod tokens;
 mod ui;
 
-use app::{App, AppEvent};
+use app::{App, AppEvent, Tab};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -21,7 +23,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
-    // Setup terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -29,7 +30,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = run_app(&mut terminal, configs).await;
 
-    // Restore terminal
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -47,28 +47,25 @@ async fn run_app(
     let mut app = App::new(configs);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    // Initial check
-    app.spawn_checks(tx.clone());
+    app.connect_all(tx.clone());
 
-    // Auto-refresh timer
     let tx_timer = tx.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            let _ = tx_timer.send(AppEvent::RefreshAll);
+            let _ = tx_timer.send(AppEvent::HealthCheckAll);
         }
     });
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
 
-        // Handle pending events from checker tasks
         while let Ok(event) = rx.try_recv() {
-            match &event {
-                AppEvent::RefreshAll => {
-                    app.spawn_checks(tx.clone());
+            match event {
+                AppEvent::HealthCheckAll => {
+                    app.spawn_health_checks(tx.clone());
                 }
-                _ => app.handle_event(event),
+                event => app.handle_event(event),
             }
         }
 
@@ -76,41 +73,86 @@ async fn run_app(
             break;
         }
 
-        // Poll for keyboard input with timeout
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+
+                // Help overlay dismissal
+                if app.show_help {
+                    app.show_help = false;
+                    continue;
+                }
+
+                // Search mode captures all keys
+                if app.search_active {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.search_active = false;
+                            app.search_query.clear();
+                        }
+                        KeyCode::Enter => {
+                            app.search_active = false;
+                        }
+                        KeyCode::Backspace => {
+                            app.search_query.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.search_query.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // Inspector input mode captures all keys
+                if app.active_tab == Tab::Inspector && app.inspector.input_mode {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.inspector.input_mode = false;
+                        }
+                        KeyCode::Enter => {
+                            app.inspector.input_mode = false;
+                            app.execute_selected_tool(tx.clone());
+                        }
+                        KeyCode::Backspace => {
+                            app.inspector.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.inspector.input_buffer.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // Normal key handling
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         app.handle_event(AppEvent::Quit);
                     }
-                    KeyCode::Char('r') => {
-                        app.spawn_checks(tx.clone());
+                    KeyCode::Char('/') => {
+                        app.search_active = true;
+                        app.search_query.clear();
                     }
-                    KeyCode::Char('e') => {
-                        if let Some(config_path) = app.selected_config_path().map(String::from) {
-                            // Suspend TUI
-                            disable_raw_mode()?;
-                            io::stdout().execute(LeaveAlternateScreen)?;
-
-                            // Open editor
-                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
-                            let _ = std::process::Command::new(&editor)
-                                .arg(&config_path)
-                                .status();
-
-                            // Restore TUI
-                            enable_raw_mode()?;
-                            io::stdout().execute(EnterAlternateScreen)?;
-                            terminal.clear()?;
-
-                            // Reload and refresh
-                            app.handle_event(AppEvent::ReloadConfig);
-                            app.spawn_checks(tx.clone());
-                        }
+                    KeyCode::Char('?') => {
+                        app.show_help = true;
                     }
+                    // Tab switching
+                    KeyCode::Char('1') => {
+                        app.handle_event(AppEvent::SetTab(Tab::Dashboard));
+                    }
+                    KeyCode::Char('2') => {
+                        app.handle_event(AppEvent::SetTab(Tab::Inspector));
+                    }
+                    KeyCode::Char('3') => {
+                        app.handle_event(AppEvent::SetTab(Tab::Protocol));
+                    }
+                    KeyCode::Char('4') => {
+                        app.handle_event(AppEvent::SetTab(Tab::Logs));
+                    }
+                    // Navigation
                     KeyCode::Up | KeyCode::Char('k') => {
                         app.handle_event(AppEvent::Up);
                     }
@@ -123,10 +165,48 @@ async fn run_app(
                     KeyCode::Char('J') | KeyCode::PageDown => {
                         app.handle_event(AppEvent::ScrollDown);
                     }
+                    // Tab-specific keys
+                    KeyCode::Char('r') => {
+                        app.refresh_all(tx.clone());
+                    }
+                    KeyCode::Char('c') => {
+                        app.toggle_connection(tx.clone());
+                    }
+                    KeyCode::Tab => {
+                        app.handle_event(AppEvent::CycleDetailTab);
+                    }
+                    KeyCode::Char('i') if app.active_tab == Tab::Inspector => {
+                        app.inspector.input_mode = true;
+                    }
+                    KeyCode::Enter if app.active_tab == Tab::Inspector => {
+                        app.execute_selected_tool(tx.clone());
+                    }
+                    KeyCode::Char('e') => {
+                        if let Some(config_path) = app.selected_config_path().map(String::from) {
+                            disable_raw_mode()?;
+                            io::stdout().execute(LeaveAlternateScreen)?;
+
+                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
+                            let _ = std::process::Command::new(&editor)
+                                .arg(&config_path)
+                                .status();
+
+                            enable_raw_mode()?;
+                            io::stdout().execute(EnterAlternateScreen)?;
+                            terminal.clear()?;
+
+                            app.handle_event(AppEvent::ReloadConfig);
+                            app.connect_all(tx.clone());
+                        }
+                    }
                     _ => {}
                 }
             }
         }
+    }
+
+    for conn in &mut app.connections {
+        conn.disconnect();
     }
 
     Ok(())
