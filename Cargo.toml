@@ -6,7 +6,7 @@ description = "A TUI dashboard for monitoring MCP (Model Context Protocol) serve
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nickslamecode/mcp-dashboard"
 readme = "README.md"
-keywords = ["mcp", "dashboard", "tui", "model-context-protocol", "devtools"]
+keywords = ["mcp", "dashboard", "tui", "devtools", "monitoring"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
