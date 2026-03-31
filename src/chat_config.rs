@@ -105,7 +105,7 @@ impl Default for AiConfig {
             }),
             cursor: Some(SubprocessConfig {
                 command: "cursor-agent".into(),
-                args: vec!["--print".into()],
+                args: vec!["--print".into(), "--trust".into()],
                 api_key: String::new(),
             }),
         }
