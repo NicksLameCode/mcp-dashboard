@@ -96,11 +96,12 @@ pub fn spawn_chat_request(
                     return;
                 }
             };
-            let prompt = build_subprocess_prompt(messages, system_prompt, &tool_defs);
+            // Claude Code uses native MCP — build config from connected servers
+            let mcp_config = build_mcp_config_json(connections, context_indices);
+            let prompt = build_subprocess_prompt(messages, system_prompt, &[]);
             let model = chat.model.clone();
-            let tmap = tool_map.clone();
             let handle = tokio::spawn(async move {
-                subprocess_chat(config.command, config.args, config.api_key, model, prompt, tmap, tx).await;
+                claude_code_chat(config.command, config.args, config.api_key, model, mcp_config, prompt, tx).await;
             });
             chat.streaming_handle = Some(handle);
         }
@@ -947,6 +948,156 @@ fn build_subprocess_prompt(
         prompt.push_str(&format!("{role}: {}\n", m.content));
     }
     prompt
+}
+
+/// Build MCP server config JSON for passing to claude --mcp-config
+fn build_mcp_config_json(
+    connections: &[crate::connection::ManagedConnection],
+    indices: &[usize],
+) -> String {
+    let mut servers = serde_json::Map::new();
+    for &idx in indices {
+        let conn = match connections.get(idx) {
+            Some(c) if c.is_connected() => c,
+            _ => continue,
+        };
+        let cfg = &conn.config;
+        // Only include stdio transport servers (can be spawned by claude)
+        if cfg.transport != crate::config::TransportType::Stdio || cfg.command.is_empty() {
+            continue;
+        }
+        let mut server = serde_json::Map::new();
+        server.insert("command".into(), serde_json::Value::String(cfg.command.clone()));
+        server.insert(
+            "args".into(),
+            serde_json::Value::Array(
+                cfg.args.iter().map(|a| serde_json::Value::String(a.clone())).collect(),
+            ),
+        );
+        if !cfg.env.is_empty() {
+            let env: serde_json::Map<String, serde_json::Value> = cfg
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            server.insert("env".into(), serde_json::Value::Object(env));
+        }
+        servers.insert(cfg.name.clone(), serde_json::Value::Object(server));
+    }
+    let mut root = serde_json::Map::new();
+    root.insert("mcpServers".into(), serde_json::Value::Object(servers));
+    serde_json::to_string(&root).unwrap_or_else(|_| r#"{"mcpServers":{}}"#.into())
+}
+
+/// Claude Code subprocess with native MCP support
+async fn claude_code_chat(
+    command: String,
+    args: Vec<String>,
+    api_key: String,
+    model: String,
+    mcp_config: String,
+    prompt: String,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let mut cmd = tokio::process::Command::new(&command);
+    cmd.args(&args);
+
+    // Pass model if not default
+    if !model.is_empty() && model != "claude-code" {
+        cmd.arg("--model").arg(&model);
+    }
+
+    // Pass MCP config and auto-approve permissions
+    if mcp_config != r#"{"mcpServers":{}}"# {
+        cmd.arg("--mcp-config").arg(&mcp_config);
+        cmd.arg("--permission-mode").arg("bypassPermissions");
+    }
+
+    cmd.arg("-p").arg(&prompt);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let _ = api_key; // Claude Code uses its own auth
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(AppEvent::ChatError(format!(
+                "Failed to spawn {command}: {e}. Is it installed?"
+            )));
+            return;
+        }
+    };
+
+    // Read stderr for error messages
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf).await;
+            String::from_utf8_lossy(&buf).to_string()
+        })
+    });
+
+    // Buffer all stdout
+    let mut full_output = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdout.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => full_output.push_str(&String::from_utf8_lossy(&buf[..n])),
+                Err(e) => {
+                    let _ = tx.send(AppEvent::ChatError(format!("Read error: {e}")));
+                    return;
+                }
+            }
+        }
+    }
+
+    let status = child.wait().await;
+    let exit_ok = status.map(|s| s.success()).unwrap_or(false);
+
+    if !exit_ok {
+        let stderr_msg = if let Some(handle) = stderr_handle {
+            handle.await.unwrap_or_default().trim().to_string()
+        } else {
+            String::new()
+        };
+        let err = if stderr_msg.is_empty() {
+            format!("{command} exited with error")
+        } else {
+            stderr_msg
+        };
+        let _ = tx.send(AppEvent::ChatError(err));
+        return;
+    }
+
+    // Parse JSON result if present, otherwise use raw text
+    let mut input_tokens: usize = 0;
+    let mut output_tokens: usize = 0;
+    let response_text;
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&full_output) {
+        response_text = json["result"].as_str().unwrap_or(&full_output).to_string();
+        if let Some(usage) = json.get("usage") {
+            input_tokens = usage["input_tokens"].as_u64().unwrap_or(0) as usize
+                + usage["cache_read_input_tokens"].as_u64().unwrap_or(0) as usize
+                + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0) as usize;
+            output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as usize;
+        }
+    } else {
+        response_text = full_output;
+    }
+
+    if !response_text.is_empty() {
+        let _ = tx.send(AppEvent::ChatToken(response_text));
+    }
+
+    let _ = tx.send(AppEvent::ChatResponseComplete {
+        input_tokens,
+        output_tokens,
+    });
 }
 
 async fn subprocess_chat(
