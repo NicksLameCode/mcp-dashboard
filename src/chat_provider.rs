@@ -96,10 +96,11 @@ pub fn spawn_chat_request(
                     return;
                 }
             };
-            let prompt = build_subprocess_prompt(messages, system_prompt);
+            let prompt = build_subprocess_prompt(messages, system_prompt, &tool_defs);
             let model = chat.model.clone();
+            let tmap = tool_map.clone();
             let handle = tokio::spawn(async move {
-                subprocess_chat(config.command, config.args, config.api_key, model, prompt, tx).await;
+                subprocess_chat(config.command, config.args, config.api_key, model, prompt, tmap, tx).await;
             });
             chat.streaming_handle = Some(handle);
         }
@@ -114,10 +115,11 @@ pub fn spawn_chat_request(
                     return;
                 }
             };
-            let prompt = build_subprocess_prompt(messages, system_prompt);
+            let prompt = build_subprocess_prompt(messages, system_prompt, &tool_defs);
             let model = chat.model.clone();
+            let tmap = tool_map.clone();
             let handle = tokio::spawn(async move {
-                subprocess_chat(config.command, config.args, config.api_key, model, prompt, tx).await;
+                subprocess_chat(config.command, config.args, config.api_key, model, prompt, tmap, tx).await;
             });
             chat.streaming_handle = Some(handle);
         }
@@ -903,8 +905,35 @@ async fn gemini_stream(
 
 // ── Subprocess providers (Claude Code, Cursor) ─────────────────────────
 
-fn build_subprocess_prompt(messages: &[ChatMessage], system_prompt: &str) -> String {
-    let mut prompt = format!("Context:\n{system_prompt}\n\nConversation:\n");
+fn build_subprocess_prompt(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    tool_defs: &[crate::chat::ToolDefinition],
+) -> String {
+    let mut prompt = format!("Context:\n{system_prompt}\n\n");
+
+    if !tool_defs.is_empty() {
+        prompt.push_str("## Available Tools\n\n");
+        prompt.push_str(
+            "You can call tools by including a JSON block in your response with this exact format:\n\n\
+             ```tool_call\n\
+             {\"tool\": \"tool_name\", \"arguments\": {\"arg1\": \"value1\"}}\n\
+             ```\n\n\
+             The tool will be executed and the result will be provided back to you. \
+             You may call multiple tools. Always use tool calls when the user asks for data \
+             that a tool can provide.\n\n\
+             Available tools:\n",
+        );
+        for tool in tool_defs {
+            prompt.push_str(&format!("- **{}**: {}\n", tool.name, tool.description));
+            if let Some(props) = tool.parameters.get("properties") {
+                prompt.push_str(&format!("  Parameters: {}\n", props));
+            }
+        }
+        prompt.push('\n');
+    }
+
+    prompt.push_str("Conversation:\n");
     for m in messages {
         let role = match m.role {
             MessageRole::User => "User",
@@ -924,6 +953,7 @@ async fn subprocess_chat(
     api_key: String,
     model: String,
     prompt: String,
+    tool_map: Vec<(String, usize)>,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     use tokio::io::AsyncReadExt;
@@ -1022,13 +1052,9 @@ async fn subprocess_chat(
     // Try to parse as JSON and extract "result" field + token usage
     let mut input_tokens: usize = 0;
     let mut output_tokens: usize = 0;
+    let response_text;
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&full_output) {
-        if let Some(result_text) = json["result"].as_str() {
-            let _ = tx.send(AppEvent::ChatToken(result_text.to_string()));
-        } else {
-            // Valid JSON but no "result" field — show raw
-            let _ = tx.send(AppEvent::ChatToken(full_output));
-        }
+        response_text = json["result"].as_str().unwrap_or(&full_output).to_string();
         if let Some(usage) = json.get("usage") {
             input_tokens = usage["input_tokens"].as_u64().unwrap_or(0) as usize
                 + usage["cache_read_input_tokens"].as_u64().unwrap_or(0) as usize
@@ -1036,12 +1062,66 @@ async fn subprocess_chat(
             output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as usize;
         }
     } else {
-        // Not valid JSON — plain text output, send as-is
-        let _ = tx.send(AppEvent::ChatToken(full_output));
+        response_text = full_output;
     }
 
-    let _ = tx.send(AppEvent::ChatResponseComplete {
-        input_tokens,
-        output_tokens,
-    });
+    // Parse tool calls from the response text (```tool_call\n{...}\n```)
+    let mut has_tool_calls = false;
+    let mut remaining_text = String::new();
+    let mut rest = response_text.as_str();
+    while let Some(start) = rest.find("```tool_call") {
+        // Add text before the tool call block
+        remaining_text.push_str(&rest[..start]);
+        rest = &rest[start..];
+
+        // Find the JSON content between ```tool_call and ```
+        let json_start = rest.find('\n').map(|i| i + 1);
+        let json_end = rest[3..].find("```").map(|i| i + 3);
+
+        if let (Some(js), Some(je)) = (json_start, json_end) {
+            let json_str = rest[js..je].trim();
+            if let Ok(call) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let tool_name = call["tool"].as_str().unwrap_or("").to_string();
+                let arguments = call.get("arguments").cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+
+                if let Some((server_idx, _)) = resolve_tool(&tool_name, &tool_map) {
+                    has_tool_calls = true;
+                    let id = format!("sub_{:x}", std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos());
+                    let _ = tx.send(AppEvent::ChatToolCall {
+                        id,
+                        name: tool_name,
+                        server_idx,
+                        args: arguments,
+                    });
+                }
+            }
+            // Skip past closing ```
+            let end_pos = je + 3;
+            rest = if end_pos < rest.len() { &rest[end_pos..] } else { "" };
+        } else {
+            // Malformed block — include as text
+            remaining_text.push_str(rest);
+            rest = "";
+        }
+    }
+    remaining_text.push_str(rest);
+
+    // Send the non-tool-call text as a chat token
+    let text_to_send = remaining_text.trim().to_string();
+    if !text_to_send.is_empty() {
+        let _ = tx.send(AppEvent::ChatToken(text_to_send));
+    }
+
+    if !has_tool_calls {
+        let _ = tx.send(AppEvent::ChatResponseComplete {
+            input_tokens,
+            output_tokens,
+        });
+    }
+    // If tool calls were emitted, the agentic loop in app.rs will handle
+    // re-invocation after tool results come back.
 }
