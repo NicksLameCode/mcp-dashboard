@@ -913,15 +913,17 @@ fn build_subprocess_prompt(
     let mut prompt = format!("Context:\n{system_prompt}\n\n");
 
     if !tool_defs.is_empty() {
-        prompt.push_str("## Available Tools\n\n");
+        prompt.push_str("## TOOLS — YOU MUST USE THESE\n\n");
         prompt.push_str(
-            "You can call tools by including a JSON block in your response with this exact format:\n\n\
+            "You have DIRECT access to the following tools. \
+             You MUST call them when the user asks for any data they can provide. \
+             Do NOT say you cannot access them — you CAN and MUST use them.\n\n\
+             To call a tool, include this EXACT format in your response:\n\n\
              ```tool_call\n\
              {\"tool\": \"tool_name\", \"arguments\": {\"arg1\": \"value1\"}}\n\
              ```\n\n\
-             The tool will be executed and the result will be provided back to you. \
-             You may call multiple tools. Always use tool calls when the user asks for data \
-             that a tool can provide.\n\n\
+             The tool will be executed and the result will be provided back to you \
+             in a follow-up message. You may call multiple tools.\n\n\
              Available tools:\n",
         );
         for tool in tool_defs {
