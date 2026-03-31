@@ -98,7 +98,7 @@ impl Default for AiConfig {
             }),
             claude_code: Some(SubprocessConfig {
                 command: "claude".into(),
-                args: vec!["--print".into(), "--output-format".into(), "json".into()],
+                args: vec!["--print".into()],
             }),
             cursor: Some(SubprocessConfig {
                 command: "cursor".into(),

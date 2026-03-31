@@ -956,15 +956,17 @@ async fn subprocess_chat(
         }
     }
 
-    // Read stdout incrementally
+    // Buffer all stdout, then try to parse as JSON to extract the result text.
+    // This handles Claude Code (--output-format json) and Cursor (--chat) which
+    // both return JSON with a "result" field.
+    let mut full_output = String::new();
     if let Some(mut stdout) = child.stdout.take() {
         let mut buf = [0u8; 4096];
         loop {
             match stdout.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = tx.send(AppEvent::ChatToken(text));
+                    full_output.push_str(&String::from_utf8_lossy(&buf[..n]));
                 }
                 Err(e) => {
                     let _ = tx.send(AppEvent::ChatError(format!("Read error: {e}")));
@@ -984,8 +986,29 @@ async fn subprocess_chat(
         return;
     }
 
+    // Try to parse as JSON and extract "result" field + token usage
+    let mut input_tokens: usize = 0;
+    let mut output_tokens: usize = 0;
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&full_output) {
+        if let Some(result_text) = json["result"].as_str() {
+            let _ = tx.send(AppEvent::ChatToken(result_text.to_string()));
+        } else {
+            // Valid JSON but no "result" field — show raw
+            let _ = tx.send(AppEvent::ChatToken(full_output));
+        }
+        if let Some(usage) = json.get("usage") {
+            input_tokens = usage["input_tokens"].as_u64().unwrap_or(0) as usize
+                + usage["cache_read_input_tokens"].as_u64().unwrap_or(0) as usize
+                + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0) as usize;
+            output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as usize;
+        }
+    } else {
+        // Not valid JSON — plain text output, send as-is
+        let _ = tx.send(AppEvent::ChatToken(full_output));
+    }
+
     let _ = tx.send(AppEvent::ChatResponseComplete {
-        input_tokens: 0,
-        output_tokens: 0,
+        input_tokens,
+        output_tokens,
     });
 }
