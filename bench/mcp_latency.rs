@@ -17,8 +17,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Stats {
-    min: f64,
-    max: f64,
     mean: f64,
     p50: f64,
     p95: f64,
@@ -30,8 +28,6 @@ fn compute_stats(mut samples: Vec<f64>) -> Stats {
     let n = samples.len();
     let sum: f64 = samples.iter().sum();
     Stats {
-        min: samples[0],
-        max: samples[n - 1],
         mean: sum / n as f64,
         p50: samples[n / 2],
         p95: samples[(n as f64 * 0.95) as usize],
