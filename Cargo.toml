@@ -1,6 +1,6 @@
 [package]
 name = "mcp-dashboard"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 rust-version = "1.85"
 description = "A full-featured TUI dashboard for managing and monitoring MCP (Model Context Protocol) servers"

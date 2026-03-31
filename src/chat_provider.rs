@@ -98,7 +98,7 @@ pub fn spawn_chat_request(
             };
             let prompt = build_subprocess_prompt(messages, system_prompt);
             let handle = tokio::spawn(async move {
-                subprocess_chat(config.command, config.args, prompt, tx).await;
+                subprocess_chat(config.command, config.args, config.api_key, prompt, tx).await;
             });
             chat.streaming_handle = Some(handle);
         }
@@ -107,7 +107,7 @@ pub fn spawn_chat_request(
                 Some(c) if !c.command.is_empty() => c.clone(),
                 _ => {
                     let _ = tx.send(AppEvent::ChatError(
-                        "Cursor not configured. Ensure 'cursor' CLI is installed.".into(),
+                        "Cursor not configured. Ensure 'cursor-agent' is installed.".into(),
                     ));
                     chat.is_streaming = false;
                     return;
@@ -115,7 +115,7 @@ pub fn spawn_chat_request(
             };
             let prompt = build_subprocess_prompt(messages, system_prompt);
             let handle = tokio::spawn(async move {
-                subprocess_chat(config.command, config.args, prompt, tx).await;
+                subprocess_chat(config.command, config.args, config.api_key, prompt, tx).await;
             });
             chat.streaming_handle = Some(handle);
         }
@@ -919,6 +919,7 @@ fn build_subprocess_prompt(messages: &[ChatMessage], system_prompt: &str) -> Str
 async fn subprocess_chat(
     command: String,
     args: Vec<String>,
+    api_key: String,
     prompt: String,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
@@ -927,7 +928,12 @@ async fn subprocess_chat(
     let mut cmd = tokio::process::Command::new(&command);
     cmd.args(&args);
 
-    // Both claude and cursor-agent accept prompt via positional arg or -p flag
+    // Pass API key via environment variable if configured
+    if !api_key.is_empty() && command.contains("cursor-agent") {
+        cmd.env("CURSOR_API_KEY", &api_key);
+    }
+
+    // Both claude and cursor-agent accept prompt via -p flag
     let uses_prompt_flag = command.contains("claude") || command.contains("cursor-agent");
     if uses_prompt_flag {
         cmd.arg("-p").arg(&prompt);
@@ -957,9 +963,16 @@ async fn subprocess_chat(
         }
     }
 
+    // Read stderr in a separate task so we can show real error messages
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf).await;
+            String::from_utf8_lossy(&buf).to_string()
+        })
+    });
+
     // Buffer all stdout, then try to parse as JSON to extract the result text.
-    // This handles Claude Code (--output-format json) and Cursor (--chat) which
-    // both return JSON with a "result" field.
     let mut full_output = String::new();
     if let Some(mut stdout) = child.stdout.take() {
         let mut buf = [0u8; 4096];
@@ -981,9 +994,18 @@ async fn subprocess_chat(
     let exit_ok = status.map(|s| s.success()).unwrap_or(false);
 
     if !exit_ok {
-        let _ = tx.send(AppEvent::ChatError(format!(
-            "{command} exited with error"
-        )));
+        // Show the actual stderr message instead of a generic error
+        let stderr_msg = if let Some(handle) = stderr_handle {
+            handle.await.unwrap_or_default().trim().to_string()
+        } else {
+            String::new()
+        };
+        let err = if stderr_msg.is_empty() {
+            format!("{command} exited with error")
+        } else {
+            stderr_msg
+        };
+        let _ = tx.send(AppEvent::ChatError(err));
         return;
     }
 
