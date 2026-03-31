@@ -167,6 +167,9 @@ async fn run_app(
                     KeyCode::Char('p') if app.active_tab == Tab::Chat => {
                         app.chat.cycle_provider(&app.ai_config.clone());
                     }
+                    KeyCode::Char('m') if app.active_tab == Tab::Chat => {
+                        app.chat.cycle_model();
+                    }
                     KeyCode::Char('n') if app.active_tab == Tab::Chat => {
                         app.chat.new_conversation();
                     }

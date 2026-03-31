@@ -97,7 +97,7 @@ pub fn spawn_chat_request(
                 }
             };
             let prompt = build_subprocess_prompt(messages, system_prompt);
-            let model = config.model.clone();
+            let model = chat.model.clone();
             let handle = tokio::spawn(async move {
                 subprocess_chat(config.command, config.args, config.api_key, model, prompt, tx).await;
             });
@@ -115,7 +115,7 @@ pub fn spawn_chat_request(
                 }
             };
             let prompt = build_subprocess_prompt(messages, system_prompt);
-            let model = config.model.clone();
+            let model = chat.model.clone();
             let handle = tokio::spawn(async move {
                 subprocess_chat(config.command, config.args, config.api_key, model, prompt, tx).await;
             });
@@ -936,8 +936,10 @@ async fn subprocess_chat(
         cmd.env("CURSOR_API_KEY", &api_key);
     }
 
-    // Pass --model flag if a model is specified (cursor-agent supports this)
-    if !model.is_empty() && command.contains("cursor-agent") {
+    // Pass --model flag if a non-default model is specified
+    // Both claude and cursor-agent support --model
+    let is_default_model = model.is_empty() || model == "claude-code" || model == "auto";
+    if !is_default_model {
         cmd.arg("--model").arg(&model);
     }
 

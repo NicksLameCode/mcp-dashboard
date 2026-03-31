@@ -359,6 +359,8 @@ fn draw_input(f: &mut Frame, area: Rect, app: &App) {
         Span::raw(" input  "),
         Span::styled("p", Style::default().fg(Color::Yellow)),
         Span::raw(" provider  "),
+        Span::styled("m", Style::default().fg(Color::Yellow)),
+        Span::raw(" model  "),
         Span::styled("n", Style::default().fg(Color::Yellow)),
         Span::raw(" new chat  "),
         Span::styled("Tab", Style::default().fg(Color::Yellow)),

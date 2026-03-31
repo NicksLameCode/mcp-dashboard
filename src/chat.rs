@@ -183,6 +183,31 @@ impl ChatState {
         };
     }
 
+    pub fn cycle_model(&mut self) {
+        let models = match self.provider {
+            ProviderKind::ClaudeCode => vec![
+                "claude-code".into(),
+                "sonnet".into(),
+                "opus".into(),
+                "haiku".into(),
+            ],
+            ProviderKind::Cursor => vec![
+                "auto".into(),
+                "claude-4.6-opus-high-thinking".into(),
+                "claude-4.6-opus-high".into(),
+                "claude-4.6-sonnet-medium-thinking".into(),
+                "claude-4.6-sonnet-medium".into(),
+                "gpt-5.4-medium".into(),
+                "gpt-5.4-high".into(),
+                "gemini-3.1-pro".into(),
+            ],
+            // API providers use a single configured model
+            _ => return,
+        };
+        let current_idx = models.iter().position(|m: &String| *m == self.model).unwrap_or(0);
+        self.model.clone_from(&models[(current_idx + 1) % models.len()]);
+    }
+
     pub fn new_conversation(&mut self) {
         self.messages.clear();
         self.streaming_buffer.clear();
