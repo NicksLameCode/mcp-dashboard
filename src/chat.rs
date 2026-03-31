@@ -111,8 +111,18 @@ impl ChatState {
                 .as_ref()
                 .map(|c| c.model.clone())
                 .unwrap_or_else(|| "gemini-2.0-flash".into()),
-            ProviderKind::ClaudeCode => "claude-code".into(),
-            ProviderKind::Cursor => "cursor".into(),
+            ProviderKind::ClaudeCode => ai_config
+                .claude_code
+                .as_ref()
+                .filter(|c| !c.model.is_empty())
+                .map(|c| c.model.clone())
+                .unwrap_or_else(|| "claude-code".into()),
+            ProviderKind::Cursor => ai_config
+                .cursor
+                .as_ref()
+                .filter(|c| !c.model.is_empty())
+                .map(|c| c.model.clone())
+                .unwrap_or_else(|| "auto".into()),
         };
 
         Self {
@@ -158,8 +168,18 @@ impl ChatState {
                 .as_ref()
                 .map(|c| c.model.clone())
                 .unwrap_or_else(|| "gemini-2.0-flash".into()),
-            ProviderKind::ClaudeCode => "claude-code".into(),
-            ProviderKind::Cursor => "cursor".into(),
+            ProviderKind::ClaudeCode => ai_config
+                .claude_code
+                .as_ref()
+                .filter(|c| !c.model.is_empty())
+                .map(|c| c.model.clone())
+                .unwrap_or_else(|| "claude-code".into()),
+            ProviderKind::Cursor => ai_config
+                .cursor
+                .as_ref()
+                .filter(|c| !c.model.is_empty())
+                .map(|c| c.model.clone())
+                .unwrap_or_else(|| "auto".into()),
         };
     }
 

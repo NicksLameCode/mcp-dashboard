@@ -57,6 +57,8 @@ pub struct SubprocessConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub model: String,
 }
 
 fn default_provider() -> String {
@@ -102,11 +104,13 @@ impl Default for AiConfig {
                 command: "claude".into(),
                 args: vec!["--print".into()],
                 api_key: String::new(),
+                model: "claude-code".into(),
             }),
             cursor: Some(SubprocessConfig {
                 command: "cursor-agent".into(),
                 args: vec!["--print".into(), "--trust".into()],
                 api_key: String::new(),
+                model: "auto".into(),
             }),
         }
     }

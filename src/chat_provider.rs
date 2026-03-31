@@ -97,8 +97,9 @@ pub fn spawn_chat_request(
                 }
             };
             let prompt = build_subprocess_prompt(messages, system_prompt);
+            let model = config.model.clone();
             let handle = tokio::spawn(async move {
-                subprocess_chat(config.command, config.args, config.api_key, prompt, tx).await;
+                subprocess_chat(config.command, config.args, config.api_key, model, prompt, tx).await;
             });
             chat.streaming_handle = Some(handle);
         }
@@ -114,8 +115,9 @@ pub fn spawn_chat_request(
                 }
             };
             let prompt = build_subprocess_prompt(messages, system_prompt);
+            let model = config.model.clone();
             let handle = tokio::spawn(async move {
-                subprocess_chat(config.command, config.args, config.api_key, prompt, tx).await;
+                subprocess_chat(config.command, config.args, config.api_key, model, prompt, tx).await;
             });
             chat.streaming_handle = Some(handle);
         }
@@ -920,6 +922,7 @@ async fn subprocess_chat(
     command: String,
     args: Vec<String>,
     api_key: String,
+    model: String,
     prompt: String,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
@@ -931,6 +934,11 @@ async fn subprocess_chat(
     // Pass API key via environment variable if configured
     if !api_key.is_empty() && command.contains("cursor-agent") {
         cmd.env("CURSOR_API_KEY", &api_key);
+    }
+
+    // Pass --model flag if a model is specified (cursor-agent supports this)
+    if !model.is_empty() && command.contains("cursor-agent") {
+        cmd.arg("--model").arg(&model);
     }
 
     // Both claude and cursor-agent accept prompt via -p flag
