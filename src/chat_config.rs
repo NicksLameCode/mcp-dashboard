@@ -101,8 +101,8 @@ impl Default for AiConfig {
                 args: vec!["--print".into()],
             }),
             cursor: Some(SubprocessConfig {
-                command: "cursor".into(),
-                args: vec!["--chat".into()],
+                command: "cursor-agent".into(),
+                args: vec!["--print".into()],
             }),
         }
     }

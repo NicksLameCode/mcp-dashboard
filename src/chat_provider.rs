@@ -927,8 +927,9 @@ async fn subprocess_chat(
     let mut cmd = tokio::process::Command::new(&command);
     cmd.args(&args);
 
-    // For claude --print, pass prompt via -p flag
-    if command.contains("claude") {
+    // Both claude and cursor-agent accept prompt via positional arg or -p flag
+    let uses_prompt_flag = command.contains("claude") || command.contains("cursor-agent");
+    if uses_prompt_flag {
         cmd.arg("-p").arg(&prompt);
     } else {
         // For other tools, try stdin
@@ -947,8 +948,8 @@ async fn subprocess_chat(
         }
     };
 
-    // If using stdin, write the prompt
-    if !command.contains("claude") {
+    // If not using -p flag, write prompt to stdin
+    if !uses_prompt_flag {
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             let _ = stdin.write_all(prompt.as_bytes()).await;
