@@ -77,7 +77,8 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
         ));
     } else {
         for (i, conn) in app.connections.iter().enumerate() {
-            let is_selected = app.chat.context_server_indices.contains(&i);
+            let none_toggled = app.chat.context_server_indices.is_empty();
+            let is_selected = none_toggled || app.chat.context_server_indices.contains(&i);
             let is_cursor = app.chat.context_cursor == i;
 
             let icon = if is_selected { "+" } else { "o" };
@@ -108,10 +109,13 @@ fn draw_status_bar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // Show estimated context tokens
-    if !app.chat.context_server_indices.is_empty() {
-        let total_tokens: usize = app
-            .chat
-            .context_server_indices
+    if !app.connections.is_empty() {
+        let active_indices: Vec<usize> = if app.chat.context_server_indices.is_empty() {
+            (0..app.connections.len()).collect()
+        } else {
+            app.chat.context_server_indices.clone()
+        };
+        let total_tokens: usize = active_indices
             .iter()
             .filter_map(|&idx| app.connections.get(idx))
             .map(|c| tokens::estimate(&c.tools, &c.resources, &c.prompts).total)
@@ -137,9 +141,9 @@ fn draw_messages(f: &mut Frame, area: Rect, app: &App) {
             "Press 'i' to start typing, then Enter to send.",
             Style::default().fg(Color::DarkGray),
         )));
-        if app.chat.context_server_indices.is_empty() {
+        if app.chat.context_server_indices.is_empty() && !app.connections.is_empty() {
             lines.push(Line::from(Span::styled(
-                "Use Tab/Space to select servers for context first.",
+                "All servers included by default. Use Tab/Space to select specific ones.",
                 Style::default().fg(Color::DarkGray),
             )));
         }

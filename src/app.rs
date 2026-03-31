@@ -239,9 +239,9 @@ impl App {
         self.chat.input_buffer.clear();
         self.chat.scroll_offset = 0; // auto-scroll to bottom
 
-        // Build context — default to currently selected server if none toggled
+        // Build context — default to all connected servers if none toggled
         let indices = if self.chat.context_server_indices.is_empty() {
-            vec![self.selected]
+            (0..self.connections.len()).collect()
         } else {
             self.chat.context_server_indices.clone()
         };
@@ -604,7 +604,7 @@ impl App {
                     let messages = self.chat.messages.clone();
                     let ai_config = self.ai_config.clone();
                     let indices = if self.chat.context_server_indices.is_empty() {
-                        vec![self.selected]
+                        (0..self.connections.len()).collect()
                     } else {
                         self.chat.context_server_indices.clone()
                     };
